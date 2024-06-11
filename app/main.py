@@ -162,7 +162,7 @@ def serialize_names(names: list[str]) -> bytes:
     result = b""
     for name in names:
         length = len(name)
-        assert length < 256
+        assert length < 64
         result += struct.pack(">B", length)
         result += name.encode()
     result += b"\x00"
@@ -215,13 +215,13 @@ def main():
             response_header = DnsHeader(
                 identifier=request_header.identifier,
                 is_response=True,
-                operation_code=0,
+                operation_code=request_header.operation_code,
                 is_authoritative_answer=False,
                 is_truncated=False,
-                is_recursion_desired=False,
+                is_recursion_desired=request_header.is_recursion_desired,
                 is_recursion_available=False,
                 reserved=0,
-                response_code=0,
+                response_code=0 if request_header.operation_code == 0 else 4,
                 question_count=request_header.question_count,
                 answer_record_count=request_header.question_count,
                 authority_record_count=0,
