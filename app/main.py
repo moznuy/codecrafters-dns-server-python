@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import socket
 import struct
 
@@ -45,7 +46,7 @@ class DnsHeader:
         reserved = (flags & 0x0070) >> 4
         response_code = (flags & 0x000F) >> 0
 
-        assert reserved == 0
+        # assert reserved == 0 # dig sends 0b010
 
         return (
             DnsHeader(
@@ -94,9 +95,78 @@ class DnsHeader:
         )
 
 
+# Question Types
+# A               1 a host address
+# NS              2 an authoritative name server
+# MD              3 a mail destination (Obsolete - use MX)
+# MF              4 a mail forwarder (Obsolete - use MX)
+# CNAME           5 the canonical name for an alias
+# SOA             6 marks the start of a zone of authority
+# MB              7 a mailbox domain name (EXPERIMENTAL)
+# MG              8 a mail group member (EXPERIMENTAL)
+# MR              9 a mail rename domain name (EXPERIMENTAL)
+# NULL            10 a null RR (EXPERIMENTAL)
+# WKS             11 a well known service description
+# PTR             12 a domain name pointer
+# HINFO           13 host information
+# MINFO           14 mailbox or mail list information
+# MX              15 mail exchange
+# TXT             16 text strings
+
+# Question Classes
+# IN              1 the Internet
+# CS              2 the CSNET class (Obsolete - used only for examples in some obsolete RFCs)
+# CH              3 the CHAOS class
+# HS              4 Hesiod [Dyer 87]
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class DnsQuestion:
+    names: list[str]
+    type: int
+    clas: int
+
+    # @property
+    # def name(self):
+    #     return ".".join(self.names)
+
+    @classmethod
+    def parse_question(cls, payload: bytes) -> tuple[DnsQuestion | None, bytes]:
+        names: list[str] = []
+
+        while True:
+            if len(payload) < 1:
+                return None, payload
+            length, payload = payload[0], payload[1:]
+            if length == 0:
+                break
+            if len(payload) < length:
+                return None, payload
+            raw_name, payload = payload[:length], payload[length:]
+            names.append(raw_name.decode())
+
+        if len(payload) < 4:
+            return None, payload
+        fields, payload = payload[:4], payload[4:]
+        typ, clas = struct.unpack(">HH", fields)
+        return DnsQuestion(names=names, type=typ, clas=clas), payload
+
+    def serialize(self) -> bytes:
+        result = b""
+        for name in self.names:
+            length = len(name)
+            assert length < 256
+            result += struct.pack(">B", length)
+            result += name.encode()
+
+        result += b"\x00"
+        result += struct.pack(">HH", self.type, self.clas)
+        return result
+
+
 def main():
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_socket.bind(("127.0.0.1", 2053))
+    udp_socket.bind(("0.0.0.0", 2053))
 
     while True:
         try:
@@ -104,8 +174,16 @@ def main():
 
             request_header, rest = DnsHeader.parse_header(buf)
             if request_header is None:
-                raise RuntimeError("Payload to short")
+                raise RuntimeError("Header Error")
+            questions: list[DnsQuestion] = []
+            for _ in range(request_header.question_count):
+                question, rest = DnsQuestion.parse_question(rest)
+                if question is None:
+                    raise RuntimeError("Question Error")
+                questions.append(question)
+
             print(request_header)
+            print(questions)
 
             response_header = DnsHeader(
                 identifier=request_header.identifier,
@@ -117,17 +195,19 @@ def main():
                 is_recursion_available=False,
                 reserved=0,
                 response_code=0,
-                question_count=0,
+                question_count=request_header.question_count,
                 answer_record_count=0,
                 authority_record_count=0,
                 additional_record_count=0,
             )
 
             response = DnsHeader.serialize(response_header)
+            for question in questions:
+                response += question.serialize()
             udp_socket.sendto(response, source)
-        except Exception as e:
-            print(f"Error receiving data: {e}")
-            break
+        except Exception:
+            logging.exception("Error receiving data:")
+            continue
 
 
 if __name__ == "__main__":
