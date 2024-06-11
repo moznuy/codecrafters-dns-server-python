@@ -4,6 +4,7 @@ import dataclasses
 import logging
 import socket
 import struct
+from typing import Any
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -124,7 +125,7 @@ class DnsHeader:
 class DnsQuestion:
     names: list[str]
     type: int
-    clas: int
+    klass: int
 
     # @property
     # def name(self):
@@ -148,19 +149,45 @@ class DnsQuestion:
         if len(payload) < 4:
             return None, payload
         fields, payload = payload[:4], payload[4:]
-        typ, clas = struct.unpack(">HH", fields)
-        return DnsQuestion(names=names, type=typ, clas=clas), payload
+        typ, klass = struct.unpack(">HH", fields)
+        return DnsQuestion(names=names, type=typ, klass=klass), payload
 
     def serialize(self) -> bytes:
-        result = b""
-        for name in self.names:
-            length = len(name)
-            assert length < 256
-            result += struct.pack(">B", length)
-            result += name.encode()
+        result = serialize_names(self.names)
+        result += struct.pack(">HH", self.type, self.klass)
+        return result
 
-        result += b"\x00"
-        result += struct.pack(">HH", self.type, self.clas)
+
+def serialize_names(names: list[str]) -> bytes:
+    result = b""
+    for name in names:
+        length = len(name)
+        assert length < 256
+        result += struct.pack(">B", length)
+        result += name.encode()
+    result += b"\x00"
+    return result
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class DnsAnswer:
+    names: list[str]
+    type: int
+    klass: int
+    ttl: int
+    data: Any
+
+    def serialize(self) -> bytes:
+        # TODO: same code
+        result = serialize_names(self.names)
+        result += struct.pack(">HHL", self.type, self.klass, self.ttl)
+
+        # A Record
+        assert self.klass == 1
+        assert isinstance(self.data, str)
+        result += struct.pack(">H", 4)
+        result += socket.inet_aton(self.data)
+
         return result
 
 
@@ -196,7 +223,7 @@ def main():
                 reserved=0,
                 response_code=0,
                 question_count=request_header.question_count,
-                answer_record_count=0,
+                answer_record_count=request_header.question_count,
                 authority_record_count=0,
                 additional_record_count=0,
             )
@@ -204,6 +231,15 @@ def main():
             response = DnsHeader.serialize(response_header)
             for question in questions:
                 response += question.serialize()
+            for question in questions:
+                response += DnsAnswer(
+                    names=question.names,
+                    type=question.type,
+                    klass=question.klass,
+                    ttl=60,
+                    data="8.8.8.8",
+                ).serialize()
+
             udp_socket.sendto(response, source)
         except Exception:
             logging.exception("Error receiving data:")
