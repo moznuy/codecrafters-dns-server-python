@@ -132,19 +132,12 @@ class DnsQuestion:
     #     return ".".join(self.names)
 
     @classmethod
-    def parse_question(cls, payload: bytes) -> tuple[DnsQuestion | None, bytes]:
-        names: list[str] = []
-
-        while True:
-            if len(payload) < 1:
-                return None, payload
-            length, payload = payload[0], payload[1:]
-            if length == 0:
-                break
-            if len(payload) < length:
-                return None, payload
-            raw_name, payload = payload[:length], payload[length:]
-            names.append(raw_name.decode())
+    def parse(
+        cls, payload: bytes, full_payload: bytes
+    ) -> tuple[DnsQuestion | None, bytes]:
+        names, payload = parse_names(payload, full_payload)
+        if names is None:
+            return None, payload
 
         if len(payload) < 4:
             return None, payload
@@ -156,6 +149,45 @@ class DnsQuestion:
         result = serialize_names(self.names)
         result += struct.pack(">HH", self.type, self.klass)
         return result
+
+
+def parse_names(
+    payload: bytes, full_payload: bytes | None
+) -> tuple[list[str] | None, bytes]:
+    names: list[str] = []
+    print()
+    while True:
+        if len(payload) < 1:
+            return None, payload
+
+        length, payload = payload[0], payload[1:]
+        if length == 0:
+            break
+
+        print((length >> 6), length, end=" ")
+
+        if (length >> 6) == 0:
+            if len(payload) < length:
+                return None, payload
+            raw_name, payload = payload[:length], payload[length:]
+            print(raw_name)
+            names.append(raw_name.decode())
+        elif (length >> 6) == 3:
+            # can't be double indirect
+            assert full_payload is not None
+
+            offset = length & 0b0011_1111
+            print(offset, full_payload[offset:], end=" ")
+            # TODO: check buffer overflow or other attack vectors
+            rest_names = parse_names(full_payload[offset:], full_payload)
+            print(rest_names)
+            assert isinstance(rest_names, list)
+            names.extend(rest_names)
+            break
+        else:
+            raise NotImplementedError
+
+    return names, payload
 
 
 def serialize_names(names: list[str]) -> bytes:
@@ -198,13 +230,14 @@ def main():
     while True:
         try:
             buf, source = udp_socket.recvfrom(512)
+            full_buff = buf[:]
 
             request_header, rest = DnsHeader.parse_header(buf)
             if request_header is None:
                 raise RuntimeError("Header Error")
             questions: list[DnsQuestion] = []
             for _ in range(request_header.question_count):
-                question, rest = DnsQuestion.parse_question(rest)
+                question, rest = DnsQuestion.parse(rest, full_buff)
                 if question is None:
                     raise RuntimeError("Question Error")
                 questions.append(question)
