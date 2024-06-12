@@ -155,7 +155,7 @@ def parse_names(
     payload: bytes, full_payload: bytes | None
 ) -> tuple[list[str] | None, bytes]:
     names: list[str] = []
-    print()
+    # print()
     while True:
         if len(payload) < 1:
             return None, payload
@@ -164,23 +164,25 @@ def parse_names(
         if length == 0:
             break
 
-        print((length >> 6), length, end=" ")
-
+        # print((length >> 6), length, end=" ")
         if (length >> 6) == 0:
             if len(payload) < length:
                 return None, payload
             raw_name, payload = payload[:length], payload[length:]
-            print(raw_name)
+            # print(raw_name)
             names.append(raw_name.decode())
         elif (length >> 6) == 3:
             # can't be double indirect
             assert full_payload is not None
 
             offset = length & 0b0011_1111
-            print(offset, full_payload[offset:], end=" ")
+            tmp, payload = payload[0], payload[1:]
+            offset = (offset << 8) | tmp
+
+            # print(offset, full_payload[offset:], end=" ")
             # TODO: check buffer overflow or other attack vectors
-            rest_names = parse_names(full_payload[offset:], full_payload)
-            print(rest_names)
+            rest_names, _ = parse_names(full_payload[offset:], full_payload)
+            # print(rest_names)
             assert isinstance(rest_names, list)
             names.extend(rest_names)
             break
@@ -231,18 +233,19 @@ def main():
         try:
             buf, source = udp_socket.recvfrom(512)
             full_buff = buf[:]
+            # print(full_buff)
 
             request_header, rest = DnsHeader.parse_header(buf)
             if request_header is None:
                 raise RuntimeError("Header Error")
+            print(request_header)
+
             questions: list[DnsQuestion] = []
             for _ in range(request_header.question_count):
                 question, rest = DnsQuestion.parse(rest, full_buff)
                 if question is None:
                     raise RuntimeError("Question Error")
                 questions.append(question)
-
-            print(request_header)
             print(questions)
 
             response_header = DnsHeader(
