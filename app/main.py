@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import random
 import socket
 import struct
+import sys
 from typing import Any
 
 
@@ -225,7 +227,66 @@ class DnsAnswer:
         return result
 
 
+def get_dns_answer(question: DnsQuestion, resolver: tuple | None) -> bytes:
+    if resolver is None:
+        return DnsAnswer(
+            names=question.names,
+            type=question.type,
+            klass=question.klass,
+            ttl=60,
+            data="8.8.8.8",
+        ).serialize()
+
+    request_header = DnsHeader(
+        identifier=random.randrange(1000, 10000),
+        is_response=False,
+        operation_code=0,
+        is_authoritative_answer=False,
+        is_truncated=False,
+        is_recursion_desired=False,
+        is_recursion_available=False,
+        reserved=0,
+        response_code=0,
+        question_count=1,
+        answer_record_count=0,
+        authority_record_count=0,
+        additional_record_count=0,
+    )
+    request = request_header.serialize() + question.serialize()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(request, resolver)
+        buf, _ = sock.recvfrom(512)
+        # TODO: same code as bellow
+        full_buff = buf[:]
+
+        request_header, rest = DnsHeader.parse_header(buf)
+        if request_header is None:
+            raise RuntimeError("Resolver Header Error")
+        print(request_header)
+
+        questions: list[DnsQuestion] = []
+        for _ in range(request_header.question_count):
+            question, rest = DnsQuestion.parse(rest, full_buff)
+            if question is None:
+                raise RuntimeError("Resolver Question Error")
+            questions.append(question)
+        print(questions)
+
+        assert request_header.answer_record_count == 1
+        # TODO: parse rest into DNSAnswer and then return .serialize()
+        return rest
+
+    finally:
+        sock.close()
+
+
 def main():
+    resolver = None
+    if len(sys.argv) > 2 and sys.argv[1] == "--resolver":
+        resolver_raw = sys.argv[2].split(":", maxsplit=1)
+        resolver = (resolver_raw[0], int(resolver_raw[1]))
+
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind(("0.0.0.0", 2053))
 
@@ -255,7 +316,7 @@ def main():
                 is_authoritative_answer=False,
                 is_truncated=False,
                 is_recursion_desired=request_header.is_recursion_desired,
-                is_recursion_available=False,
+                is_recursion_available=resolver is not None,
                 reserved=0,
                 response_code=0 if request_header.operation_code == 0 else 4,
                 question_count=request_header.question_count,
@@ -268,13 +329,7 @@ def main():
             for question in questions:
                 response += question.serialize()
             for question in questions:
-                response += DnsAnswer(
-                    names=question.names,
-                    type=question.type,
-                    klass=question.klass,
-                    ttl=60,
-                    data="8.8.8.8",
-                ).serialize()
+                response += get_dns_answer(question, resolver)
 
             udp_socket.sendto(response, source)
         except Exception:
